@@ -23,6 +23,16 @@ interface CellPosition {
   isName: boolean;
 }
 
+interface PopupData {
+  show: boolean;
+  value: number;
+  month: string;
+  subCategory: { name: string; values: number[] } | null;
+  valueIndex: number;
+}
+
+type ApplyMode = 'all' | 'following' | null;
+
 @Component({
   selector: 'app-root',
   standalone: true,
@@ -244,8 +254,35 @@ export class AppComponent implements AfterViewInit {
     this.budgetItems.update((items) => [...items]);
   }
 
+  updateValue(
+    subCategory: { name: string; values: number[] },
+    index: number,
+    value: number
+  ) {
+    this.budgetItems.update((items) => {
+      return items.map((item) => {
+        return {
+          ...item,
+          subCategories: item.subCategories.map((sub) => {
+            if (sub === subCategory) {
+              // Cập nhật giá trị trực tiếp mà không thay đổi tham chiếu mảng
+              sub.values[index] = value;
+            }
+            return sub;
+          }),
+        };
+      });
+    });
+  }
+
+  handleInput(event: Event, sub: any, valueIndex: number) {
+    const inputElement = event.target as HTMLInputElement;
+    const numericValue = parseFloat(inputElement.value);
+    this.updateValue(sub, valueIndex, numericValue);
+  }
+
   confirmDeleteCategory(category: BudgetItem) {
-    const confirmDelete = confirm('Bạn có chắc muốn xóa danh mục này không?');
+    const confirmDelete = confirm('Do you want to delete this category?');
     if (confirmDelete) {
       this.deleteCategory(category);
     }
@@ -261,7 +298,7 @@ export class AppComponent implements AfterViewInit {
     category: BudgetItem,
     subCategory: { name: string; values: number[] }
   ) {
-    const confirmDelete = confirm('Bạn có chắc muốn xóa hàng này không?');
+    const confirmDelete = confirm('Do you want to delete this row?');
     if (confirmDelete) {
       this.deleteSubCategory(category, subCategory);
     }
@@ -287,6 +324,15 @@ export class AppComponent implements AfterViewInit {
     });
   }
 
+  popup = signal<PopupData & { selectedMode: ApplyMode }>({
+    show: false,
+    value: 0,
+    month: '',
+    subCategory: null,
+    valueIndex: 0,
+    selectedMode: null,
+  });
+
   applyToAll(
     subCategory: { name: string; values: number[] },
     index: number,
@@ -294,20 +340,120 @@ export class AppComponent implements AfterViewInit {
   ) {
     event.preventDefault();
     const valueToApply = subCategory.values[index];
+    const month = this.months$.value[index];
+
+    // Show popup with mode selection
+    this.popup.set({
+      show: true,
+      value: valueToApply,
+      month,
+      subCategory,
+      valueIndex: index,
+      selectedMode: null,
+    });
+  }
+
+  applyValues(mode: ApplyMode) {
+    const { value, subCategory, valueIndex } = this.popup();
+    if (!subCategory) return;
+
     this.budgetItems.update((items) => {
       return items.map((category) => {
         return {
           ...category,
           subCategories: category.subCategories.map((sub) => {
             if (sub.name === subCategory.name) {
-              return { ...sub, values: sub.values.map(() => valueToApply) };
+              const newValues = [...sub.values];
+
+              if (mode === 'all') {
+                // Apply to all months
+                return { ...sub, values: newValues.map(() => value) };
+              } else if (mode === 'following') {
+                // Apply only to current and following months
+                for (let i = valueIndex; i < newValues.length; i++) {
+                  newValues[i] = value;
+                }
+                return { ...sub, values: newValues };
+              }
             }
             return sub;
           }),
         };
       });
     });
+
+    // Close popup after applying
+    this.closePopup();
   }
+
+  selectMode(mode: ApplyMode) {
+    this.popup.update((current) => ({
+      ...current,
+      selectedMode: mode,
+    }));
+  }
+
+  confirmApply() {
+    const { selectedMode } = this.popup();
+    if (selectedMode) {
+      this.applyValues(selectedMode);
+    }
+  }
+
+  // confirmApplyToAll() {
+  //   const { value, subCategory, valueIndex } = this.popup();
+  //   if (!subCategory) return;
+
+  //   this.budgetItems.update((items) => {
+  //     return items.map((category) => {
+  //       return {
+  //         ...category,
+  //         subCategories: category.subCategories.map((sub) => {
+  //           if (sub.name === subCategory.name) {
+  //             return { ...sub, values: sub.values.map(() => value) };
+  //           }
+  //           return sub;
+  //         }),
+  //       };
+  //     });
+  //   });
+
+  //   // Close popup after applying
+  //   this.closePopup();
+  // }
+
+  closePopup() {
+    this.popup.set({
+      show: false,
+      value: 0,
+      month: '',
+      subCategory: null,
+      valueIndex: 0,
+      selectedMode: null,
+    });
+  }
+
+  // applyToAll(
+  //   subCategory: { name: string; values: number[] },
+  //   index: number,
+  //   event: Event
+  // ) {
+  //   event.preventDefault();
+  //   const valueToApply = subCategory.values[index];
+  //   this.budgetItems.update((items) => {
+  //     return items.map((category) => {
+  //       return {
+  //         ...category,
+  //         subCategories: category.subCategories.map((sub) => {
+  //           if (sub.name === subCategory.name) {
+  //             return { ...sub, values: sub.values.map(() => valueToApply) };
+  //           }
+  //           return sub;
+  //         }),
+  //       };
+  //     });
+  //   });
+  // }
 
   calculateSubTotal(category: BudgetItem): number[] {
     return (
@@ -321,6 +467,29 @@ export class AppComponent implements AfterViewInit {
     return this.budgetItems().reduce((totals, category) => {
       return totals.map((sum, i) => sum + this.calculateSubTotal(category)[i]);
     }, new Array(12).fill(0));
+  }
+
+  calculateRollingTotal() {
+    let totals = this.calculateTotal();
+    let rollingTotal: number[] = [];
+    totals.reduce((prev, curr, index) => {
+      rollingTotal[index] = prev + curr;
+      return rollingTotal[index];
+    }, 0);
+    return rollingTotal;
+  }
+
+  getRollingTotalWithPrevious() {
+    let rollingTotal = 0;
+    return this.calculateTotal().map((value, index) => {
+      let prev = rollingTotal;
+      rollingTotal += value;
+      return {
+        total: rollingTotal,
+        prev: prev,
+        current: value,
+      };
+    });
   }
 
   onInputKeyDown(event: KeyboardEvent) {
